@@ -1,0 +1,6 @@
+[submodule "YouTubeHeader"]
+	path = YouTubeHeader
+	url = https://github.com/PoomSmart/YouTubeHeader
+[submodule "protobuf"]
+	path = protobuf
+	url = https://github.com/protocolbuffers/protobuf

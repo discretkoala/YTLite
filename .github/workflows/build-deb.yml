@@ -1,0 +1,118 @@
+name: Build .deb (Theos)
+
+on:
+  push:
+    branches: [ main ]
+    tags: [ 'v*' ]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build (${{ matrix.scheme.name }})
+    runs-on: macos-14
+    strategy:
+      fail-fast: false
+      matrix:
+        scheme:
+          - name: rootful
+            env: {}
+            artifact_suffix: rootful
+          - name: rootless
+            env: { ROOTLESS: '1' }
+            artifact_suffix: rootless
+          - name: roothide
+            env: { ROOTHIDE: '1' }
+            artifact_suffix: roothide
+    env:
+      THEOS: ${{ github.workspace }}/.theos
+      # Speed up make a bit
+      MAKEFLAGS: -j2
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      # YouTubeHeader and protobuf are now git submodules; pulled via submodules: recursive
+
+      - name: Install dependencies (Homebrew)
+        shell: bash
+        run: |
+          brew update
+          brew install ldid dpkg make || true
+
+      - name: Cache Theos directory
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.theos
+          key: theos-${{ runner.os }}-v1-roothide
+
+      - name: Setup Theos and SDKs
+        shell: bash
+        run: |
+          if [ ! -d "$THEOS" ]; then
+            git clone --recursive https://github.com/roothide/theos.git "$THEOS"
+          else
+            echo "Theos already present at $THEOS"
+          fi
+          mkdir -p "$THEOS/sdks"
+          # Prefer Xcode's installed SDK and link it as the requested version to satisfy TARGET := iphone:clang:16.5:13.0
+          IOS_SDK_PATH="$(xcrun --sdk iphoneos --show-sdk-path)"
+          echo "Detected iOS SDK: $IOS_SDK_PATH"
+          if [ ! -e "$THEOS/sdks/iPhoneOS16.5.sdk" ]; then
+            ln -s "$IOS_SDK_PATH" "$THEOS/sdks/iPhoneOS16.5.sdk"
+            echo "Linked $IOS_SDK_PATH -> $THEOS/sdks/iPhoneOS16.5.sdk"
+          fi
+          # Also provide a generic iPhoneOS.sdk link for tools that expect it
+          if [ ! -e "$THEOS/sdks/iPhoneOS.sdk" ]; then
+            ln -s "$IOS_SDK_PATH" "$THEOS/sdks/iPhoneOS.sdk"
+          fi
+
+      - name: Print toolchain versions
+        shell: bash
+        run: |
+          echo THEOS=$THEOS
+          xcrun --sdk iphoneos --show-sdk-version
+          ldid --version || true
+
+      - name: Build package (${{ matrix.scheme.name }})
+        shell: bash
+        env:
+          ROOTLESS: ${{ matrix.scheme.name == 'rootless' && '1' || '' }}
+          ROOTHIDE: ${{ matrix.scheme.name == 'roothide' && '1' || '' }}
+        run: |
+          make clean || true
+          make package
+
+      - name: List packages
+        shell: bash
+        run: |
+          ls -la packages || true
+
+      - name: Upload .deb artifact (${{ matrix.scheme.name }})
+        uses: actions/upload-artifact@v4
+        with:
+          name: ytlite-${{ matrix.scheme.artifact_suffix }}-deb
+          path: |
+            packages/*.deb
+          if-no-files-found: warn
+
+  release:
+    name: Release
+    runs-on: macos-14
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: ./dist
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/**/**/*.deb
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
